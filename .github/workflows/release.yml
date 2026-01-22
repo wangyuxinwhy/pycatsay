@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build binary with PyInstaller
+        run: uv run pyinstaller --onefile --name pycatsay pycatsay.py
+
+      - name: Create Release
+        run: gh release create ${{ github.ref_name }} dist/pycatsay --title "${{ github.ref_name }}" --notes "Release ${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate SHA256
+        id: sha
+        run: echo "sha256=$(shasum -a 256 dist/pycatsay | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          # Clone homebrew-tap
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/wangyuxinwhy/homebrew-tap.git
+          cd homebrew-tap
+
+          # Update formula
+          cat > Formula/pycatsay.rb << 'EOF'
+          class Pycatsay < Formula
+            desc "A Python cat that says things in your terminal (standalone binary)"
+            homepage "https://github.com/wangyuxinwhy/pycatsay"
+            url "https://github.com/wangyuxinwhy/pycatsay/releases/download/${{ github.ref_name }}/pycatsay"
+            sha256 "${{ steps.sha.outputs.sha256 }}"
+            version "${{ steps.version.outputs.version }}"
+            license "MIT"
+
+            def install
+              bin.install "pycatsay"
+            end
+
+            test do
+              assert_match "pycatsay", shell_output("#{bin}/pycatsay --version")
+            end
+          end
+          EOF
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/pycatsay.rb
+          git commit -m "chore: bump pycatsay to ${{ steps.version.outputs.version }}"
+          git push
